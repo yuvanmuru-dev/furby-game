@@ -148,7 +148,7 @@ const PLAYER = {
   maxHearts: 3, hearts: 3, invulnUntil: 0,
   // ability stats (upgradable in shop)
   ballDamage: 1,
-  cooldownMs: 3000,    // 3 second ball cooldown
+  cooldownMs: 1500,    // 1.5 second ball cooldown
   shieldDurMs: 3000, shieldCdMs: 8000,
   tankDurMs: 5000, tankCdMs: 12000,
   // ability timers (timestamps)
@@ -210,18 +210,18 @@ const FURBY_BASE = {
 ===================================================================== */
 const GROUND = { x:0, y:480, w:900, h:40 };
 const TEMPLATES = [
-  // Template A - stairs both sides
-  [ {x:60,y:380,w:130,h:16}, {x:230,y:310,w:110,h:16}, {x:120,y:240,w:120,h:16},
-    {x:400,y:360,w:120,h:16}, {x:390,y:250,w:120,h:16}, {x:420,y:150,w:90,h:16},
-    {x:640,y:380,w:130,h:16}, {x:680,y:300,w:110,h:16}, {x:620,y:210,w:120,h:16} ],
+  // Template A - stairs both sides (each step ~60-80px apart, all reachable)
+  [ {x:60,y:400,w:140,h:16}, {x:240,y:330,w:120,h:16}, {x:120,y:270,w:120,h:16},
+    {x:400,y:390,w:130,h:16}, {x:430,y:310,w:120,h:16}, {x:470,y:230,w:110,h:16},
+    {x:660,y:390,w:140,h:16}, {x:700,y:310,w:120,h:16}, {x:640,y:240,w:120,h:16} ],
   // Template B - floating islands
-  [ {x:90,y:340,w:150,h:16}, {x:330,y:300,w:160,h:16}, {x:580,y:340,w:150,h:16},
-    {x:200,y:200,w:120,h:16}, {x:480,y:190,w:130,h:16}, {x:700,y:230,w:120,h:16},
-    {x:380,y:120,w:140,h:16} ],
+  [ {x:90,y:380,w:160,h:16}, {x:330,y:330,w:170,h:16}, {x:580,y:380,w:160,h:16},
+    {x:200,y:260,w:140,h:16}, {x:480,y:250,w:150,h:16}, {x:700,y:290,w:140,h:16},
+    {x:390,y:190,w:150,h:16} ],
   // Template C - zigzag climb
-  [ {x:50,y:400,w:140,h:16}, {x:260,y:350,w:120,h:16}, {x:80,y:280,w:120,h:16},
-    {x:300,y:240,w:130,h:16}, {x:120,y:170,w:130,h:16}, {x:500,y:330,w:140,h:16},
-    {x:680,y:270,w:130,h:16}, {x:560,y:180,w:120,h:16}, {x:740,y:150,w:120,h:16} ],
+  [ {x:50,y:410,w:150,h:16}, {x:260,y:360,w:140,h:16}, {x:90,y:300,w:140,h:16},
+    {x:310,y:290,w:140,h:16}, {x:140,y:230,w:140,h:16}, {x:500,y:370,w:150,h:16},
+    {x:690,y:310,w:140,h:16}, {x:560,y:240,w:140,h:16}, {x:740,y:200,w:140,h:16} ],
 ];
 
 /* =====================================================================
@@ -411,15 +411,18 @@ function overlap(ax,ay,aw,ah,bx,by,bw,bh){
 }
 function resolvePlatforms() {
   PLAYER.onGround = false;
+  const playerBottom = PLAYER.y + PLAYER.h;
+  const prevBottom = playerBottom - PLAYER.vy; // where the feet were last frame
   for (const p of platforms) {
-    if (!overlap(PLAYER.x,PLAYER.y,PLAYER.w,PLAYER.h,p.x,p.y,p.w,p.h)) continue;
-    const oL=(PLAYER.x+PLAYER.w)-p.x, oR=(p.x+p.w)-PLAYER.x;
-    const oT=(PLAYER.y+PLAYER.h)-p.y, oB=(p.y+p.h)-PLAYER.y;
-    const m=Math.min(oL,oR,oT,oB);
-    if (m===oT && PLAYER.vy>=0){ PLAYER.y=p.y-PLAYER.h; PLAYER.vy=0; PLAYER.onGround=true; }
-    else if (m===oB && PLAYER.vy<0){ PLAYER.y=p.y+p.h; PLAYER.vy=0; }
-    else if (m===oL){ PLAYER.x=p.x-PLAYER.w; }
-    else if (m===oR){ PLAYER.x=p.x+p.w; }
+    // Must be lined up horizontally with the platform
+    if (PLAYER.x + PLAYER.w <= p.x || PLAYER.x >= p.x + p.w) continue;
+    // One-way platforms: only land when falling AND the feet came from above.
+    // Jumping up from underneath passes right through (no head-bonk).
+    if (PLAYER.vy >= 0 && prevBottom <= p.y + 8 && playerBottom >= p.y) {
+      PLAYER.y = p.y - PLAYER.h;
+      PLAYER.vy = 0;
+      PLAYER.onGround = true;
+    }
   }
 }
 
@@ -662,7 +665,7 @@ function winGame() {
 function restartGame() {
   currentLevel = 1; checkpoint = 1; score = 0; starCoins = 0;
   PLAYER.maxHearts = 3; PLAYER.hearts = 3;
-  PLAYER.ballDamage = 1; PLAYER.cooldownMs = 3000;
+  PLAYER.ballDamage = 1; PLAYER.cooldownMs = 1500;
   PLAYER.shieldDurMs = 3000; PLAYER.tankDurMs = 5000;
   PLAYER.shieldUntil=0; PLAYER.shieldReadyAt=0; PLAYER.tankUntil=0; PLAYER.tankReadyAt=0;
   hideOverlay();
