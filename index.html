@@ -373,6 +373,7 @@ function throwBall() {
     r: big ? 16 : 10,
     dmg: PLAYER.ballDamage * (big ? 2 : 1),
     age: 0, alive: true,
+    hit: [],   // enemies this ball has already damaged (prevents multi-hit per frame)
   });
 }
 
@@ -499,9 +500,11 @@ function update(dt) {
     // hit furbies
     for (const f of furbies) {
       if (!f.alive || !b.alive) continue;
+      if (b.hit.includes(f)) continue; // already damaged this enemy with this ball
       if (overlap(b.x-b.r,b.y-b.r,b.r*2,b.r*2, f.x,f.y,f.w,f.h)) {
         damageFurby(f, b.dmg);
-        if (!f.isBoss) b.alive = false; // small furbies stop the ball; bosses let it pass
+        b.hit.push(f);                  // remember it so we don't hit it again next frame
+        if (!f.isBoss) b.alive = false; // small furbies stop the ball; bosses let it pass through
         spawnParticles(b.x, b.y, '#60a5fa', 8);
       }
     }
