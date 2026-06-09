@@ -111,6 +111,7 @@ const overlay = document.getElementById('overlay');
 /* ---------- TOP-LEVEL GAME STATE ---------- */
 let state = 'cutscene';   // cutscene | playing | shop | transition | dead | win
 let currentLevel = 1;
+let checkpoint = 1;       // last boss/mini-boss checkpoint (every 5 levels)
 let score = 0;
 let starCoins = 0;        // collected stars = money for the shop
 let lastTime = 0;
@@ -138,7 +139,7 @@ canvas.addEventListener('mousedown', () => { if (state === 'playing') throwBall(
 const GRAVITY = 0.6, JUMP_FORCE = -13, MOVE_SPEED = 4, MAX_FALL = 15;
 
 /* =====================================================================
-   PLAYER (ZYX - alien shapeshifter secret agent)
+   PLAYER (Furby Fighter - alien shapeshifter secret agent)
 ===================================================================== */
 const PLAYER = {
   x: 60, y: 380, w: 30, h: 42, vx: 0, vy: 0,
@@ -171,7 +172,7 @@ function isTank(now) { return now < PLAYER.tankUntil; }
 let platforms = [];
 let stars = [];
 let furbies = [];
-let playerBalls = [];   // ZYX's electric bowling balls
+let playerBalls = [];   // Furby Fighter's electric bowling balls
 let furbyShots = [];    // enemy projectiles (they fight back!)
 let petShots = [];      // sidekick pellets
 let particles = [];
@@ -230,6 +231,8 @@ function buildLevel(n) {
   platforms = [GROUND, ...TEMPLATES[(n - 1) % TEMPLATES.length]];
   stars = []; furbies = []; playerBalls = []; furbyShots = []; petShots = []; particles = [];
   resetPlayerPosition();
+  // Give the player 3 seconds of invincibility when a level starts (safe landing)
+  PLAYER.invulnUntil = performance.now() + 3000;
 
   // Scatter a few collectible stars on platforms
   const floatPlats = platforms.filter(p => p.h < 30);
@@ -266,24 +269,41 @@ function spawnNormalFurbies(n) {
 
   for (let i = 0; i < count; i++) {
     const type = pool[Math.floor(Math.random() * pool.length)];
-    const startX = 120 + Math.random() * (W - 240);
-    makeFurby(type, startX, 446, n);
+    const base = FURBY_BASE[type];
+    // Pick where this furby stands. Chasers stay on the ground so they can
+    // hunt the player; other types get spread out onto the floating platforms.
+    const floatPlats = platforms.filter(p => p.h < 30);
+    let plat;
+    if (base.behavior === 'chase' || floatPlats.length === 0 || Math.random() < 0.4) {
+      plat = GROUND;
+    } else {
+      plat = floatPlats[Math.floor(Math.random() * floatPlats.length)];
+    }
+    // Place somewhere along that platform
+    const margin = 6;
+    const lo = plat.x + margin;
+    const hi = plat.x + plat.w - margin - 34;
+    const x = (hi > lo) ? lo + Math.random() * (hi - lo) : plat.x + plat.w / 2 - 17;
+    makeFurby(type, x, plat, n);
   }
 }
 
-/* Create one furby and push to list */
-function makeFurby(type, x, groundY, levelN) {
+/* Create one furby standing on a given platform and push to list */
+function makeFurby(type, x, plat, levelN) {
   const base = FURBY_BASE[type];
   const w = 34, h = 36;
   // Higher levels = slightly tougher
   const hp = base.hp + Math.floor(levelN / 8);
+  const onGround = (plat === GROUND);
   furbies.push({
-    type, x, y: groundY - h, w, h,
+    type, x, y: plat.y - h, w, h,
     hp, maxHp: hp,
     speed: base.speed, behavior: base.behavior, shoots: base.shoots,
     scoreValue: base.score,
     dir: Math.random() < 0.5 ? -1 : 1,
-    minX: Math.max(10, x - 140), maxX: Math.min(W - 10, x + 140),
+    // Patrol only within this platform so floating furbies don't walk off into the air
+    minX: onGround ? 10 : plat.x + 2,
+    maxX: onGround ? W - 10 : plat.x + plat.w - 2,
     walk: Math.random()*6, alive: true,
     lastShotAt: 0, shotCd: 1800 + Math.random()*1200,
     hurtFlash: 0, isBoss: false, scale: 1,
@@ -294,7 +314,7 @@ function makeFurby(type, x, groundY, levelN) {
 function spawnMiniBoss(n) {
   const hp = 18 + n;
   furbies.push({
-    type: 'purple', x: W/2 - 45, y: 446 - 70, w: 90, h: 70,
+    type: 'purple', x: W/2 - 45, y: GROUND.y - 70, w: 90, h: 70,
     hp, maxHp: hp, speed: 1.0, behavior: 'chase', shoots: true,
     scoreValue: 1500, dir: 1, minX: 20, maxX: W - 110,
     walk: 0, alive: true, lastShotAt: 0, shotCd: 1400,
@@ -307,23 +327,23 @@ function spawnMiniBoss(n) {
 function spawnLevelBoss(n) {
   const hp = 30 + n * 2;
   furbies.push({
-    type: 'boss', x: W/2 - 60, y: 446 - 90, w: 120, h: 90,
+    type: 'boss', x: W/2 - 60, y: GROUND.y - 90, w: 120, h: 90,
     hp, maxHp: hp, speed: 1.3, behavior: 'chase', shoots: true,
     scoreValue: 3000, dir: 1, minX: 20, maxX: W - 140,
     walk: 0, alive: true, lastShotAt: 0, shotCd: 1100,
     hurtFlash: 0, isBoss: true, bossKind: 'level', scale: 2.6,
     name: 'FURBY WARLORD',
   });
-  // a couple of minions
-  makeFurby('red', 150, 446, n);
-  makeFurby('green', 750, 446, n);
+  // a couple of minions on the ground
+  makeFurby('red', 150, GROUND, n);
+  makeFurby('green', 750, GROUND, n);
 }
 
 /* FINAL BOSS: the FURBY CEO */
 function spawnFinalBoss() {
   const hp = 120;
   furbies.push({
-    type: 'ceo', x: W/2 - 75, y: 446 - 120, w: 150, h: 120,
+    type: 'ceo', x: W/2 - 75, y: GROUND.y - 120, w: 150, h: 120,
     hp, maxHp: hp, speed: 1.5, behavior: 'chase', shoots: true,
     scoreValue: 10000, dir: 1, minX: 20, maxX: W - 170,
     walk: 0, alive: true, lastShotAt: 0, shotCd: 800,
@@ -585,6 +605,8 @@ function damageFurby(f, dmg) {
 function levelComplete() {
   state = 'transition';
   const nextLevel = currentLevel + 1;
+  // Beating a boss / mini-boss (every 5th level) sets a checkpoint
+  if (currentLevel % 5 === 0) checkpoint = currentLevel + 1;
   if (currentLevel >= 30) { winGame(); return; }
   // Shop appears before every boss/mini-boss level (every 5th level)
   if (nextLevel % 5 === 0) {
@@ -608,23 +630,37 @@ function startNextLevel() {
 
 function gameOver() {
   state = 'dead';
-  showOverlay(`<h1>☠ Game Over</h1>
-    <p>The Furbies overwhelmed ZYX on level ${currentLevel}.</p>
-    <h2>Final Score: ${score}</h2>
-    <button onclick="restartGame()">↻ Try again</button>`);
+  const cp = checkpoint;
+  showOverlay(`<h1>☠ Defeated!</h1>
+    <p>The Furbies took down Furby Fighter on level ${currentLevel}.</p>
+    <h2>Score: ${score}</h2>
+    <button onclick="resetToCheckpoint()">↻ Restart from checkpoint (Level ${cp})</button>`);
+}
+
+/* Send the player back to the last boss checkpoint, hearts refilled,
+   keeping their score, stars, and shop upgrades. */
+function resetToCheckpoint() {
+  currentLevel = checkpoint;
+  PLAYER.hearts = PLAYER.maxHearts;
+  PLAYER.shieldUntil = 0; PLAYER.tankUntil = 0;
+  PLAYER.shieldReadyAt = 0; PLAYER.tankReadyAt = 0;
+  hideOverlay();
+  state = 'playing';
+  buildLevel(currentLevel);
+  updateHUD();
 }
 
 function winGame() {
   state = 'win';
   showOverlay(`<h1>🌠 You Win!</h1>
-    <p>ZYX defeated the FURBY C.E.O., ended the uprising, and rescued his family!
+    <p>Furby Fighter defeated the FURBY C.E.O., ended the uprising, and rescued his family!
        The planet Lumara is safe again.</p>
     <h2>Final Score: ${score}</h2>
     <button onclick="restartGame()">↻ Play again</button>`);
 }
 
 function restartGame() {
-  currentLevel = 1; score = 0; starCoins = 0;
+  currentLevel = 1; checkpoint = 1; score = 0; starCoins = 0;
   PLAYER.maxHearts = 3; PLAYER.hearts = 3;
   PLAYER.ballDamage = 1; PLAYER.cooldownMs = 3000;
   PLAYER.shieldDurMs = 3000; PLAYER.tankDurMs = 5000;
@@ -806,7 +842,7 @@ function drawPet() {
   ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x+2.5,y+bob,1,0,Math.PI*2); ctx.fill();
 }
 
-/* Player ZYX: shaded alien kid with aura; changes form in TANK mode */
+/* Player Furby Fighter: shaded alien kid with aura; changes form in TANK mode */
 function drawPlayer(now) {
   const cx = PLAYER.x + PLAYER.w/2, cy = PLAYER.y + PLAYER.h/2;
   const flicker = now < PLAYER.invulnUntil ? (Math.sin(now/60)>0?0.4:1) : 1;
@@ -851,8 +887,8 @@ function drawPlayer(now) {
   ctx.beginPath(); ctx.moveTo(-8,2); ctx.lineTo(-13,8+sw); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(8,2); ctx.lineTo(13,8-sw); ctx.stroke();
   ctx.lineWidth=5;
-  ctx.beginPath(); ctx.moveTo(-4,16); ctx.lineTo(-6,24+sw); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(4,16); ctx.lineTo(6,24-sw); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-4,14); ctx.lineTo(-6,21+sw*0.4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4,14); ctx.lineTo(6,21-sw*0.4); ctx.stroke();
 
   ctx.restore();
   ctx.restore();
@@ -1089,9 +1125,9 @@ function draw(now) {
 ===================================================================== */
 const CUTSCENE = [
   { title:'PLANET LUMARA', text:'Far across the galaxy, the cute little Furbies suddenly turned... EVIL.' },
-  { title:'THE UPRISING', text:'They rose up, took over the cities, and captured ZYX\'s family.' },
-  { title:'THE SECRET AGENT', text:'ZYX is a shapeshifting secret agent. He was sent on a mission: stop the Furby uprising on his home planet and rescue his family.' },
-  { title:'THE MISSION BEGINS', text:'Armed with electric bowling balls, a force-field shield, a mighty TANK form, and his pet Glorp... ZYX strikes back. NOW.' },
+  { title:'THE UPRISING', text:'They rose up, took over the cities, and captured Furby Fighter\'s family.' },
+  { title:'THE SECRET AGENT', text:'Furby Fighter is a shapeshifting secret agent. He was sent on a mission: stop the Furby uprising on his home planet and rescue his family.' },
+  { title:'THE MISSION BEGINS', text:'Armed with electric bowling balls, a force-field shield, a mighty TANK form, and his pet Glorp... Furby Fighter strikes back. NOW.' },
 ];
 let cutsceneIndex = 0;
 let typeChars = 0;
@@ -1111,6 +1147,13 @@ function startStory() {
 
 function drawCutscene(now) {
   drawBackground(now);
+  // Brighten the cutscene with a soft ambient glow so it isn't so dark
+  const glow = ctx.createRadialGradient(W/2, H/2 - 30, 30, W/2, H/2, 580);
+  glow.addColorStop(0, 'rgba(139,92,246,0.40)');
+  glow.addColorStop(0.45, 'rgba(76,29,149,0.22)');
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+
   const panel = CUTSCENE[cutsceneIndex];
   // typewriter effect
   if (typeChars < panel.text.length) typeChars += 0.6;
@@ -1119,17 +1162,21 @@ function drawCutscene(now) {
   // simple illustration per panel
   drawCutsceneArt(cutsceneIndex, now);
 
+  // soft dark strip behind the story text so it stays easy to read
+  ctx.fillStyle = 'rgba(10,4,30,0.55)';
+  ctx.fillRect(80, 340, W - 160, 90);
+
   // title
-  ctx.fillStyle='#c4b5fd'; ctx.font='bold 26px Trebuchet MS'; ctx.textAlign='center';
-  ctx.shadowColor='#7c3aed'; ctx.shadowBlur=12;
+  ctx.fillStyle='#e9d5ff'; ctx.font='bold 26px Trebuchet MS'; ctx.textAlign='center';
+  ctx.shadowColor='#7c3aed'; ctx.shadowBlur=14;
   ctx.fillText(panel.title, W/2, 90); ctx.shadowBlur=0;
 
   // wrapped story text
-  ctx.fillStyle='#ddd6fe'; ctx.font='18px Trebuchet MS';
-  wrapText(shown, W/2, 380, 620, 26);
+  ctx.fillStyle='#f5f3ff'; ctx.font='18px Trebuchet MS';
+  wrapText(shown, W/2, 385, 620, 26);
 
   // prompt
-  ctx.fillStyle = Math.sin(now/300)>0 ? '#facc15' : '#854d0e';
+  ctx.fillStyle = Math.sin(now/300)>0 ? '#facc15' : '#a16207';
   ctx.font='14px Trebuchet MS';
   ctx.fillText('Press SPACE to continue  ('+(cutsceneIndex+1)+'/'+CUTSCENE.length+')', W/2, 470);
   ctx.textAlign='left';
@@ -1148,10 +1195,10 @@ function drawCutsceneArt(i, now) {
     // angry furby trio
     for (let k=-1;k<=1;k++) drawMiniFurbyArt(W/2 + k*120, 220, 1+0.1*k, now);
   } else if (i === 2) {
-    // ZYX standing heroic
+    // Furby Fighter standing heroic
     drawHeroArt(W/2, 240, now);
   } else {
-    // ZYX + pet + ball
+    // Furby Fighter + pet + ball
     drawHeroArt(W/2-40, 240, now);
     // pet
     ctx.fillStyle='#14b8a6'; ctx.beginPath(); ctx.arc(W/2+60,200,18,0,Math.PI*2); ctx.fill();
