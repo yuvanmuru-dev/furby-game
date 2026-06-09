@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Starshift: Furby Invasion</title>
+<style>
+  /* ===== GLOBAL LOOK ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #02000a;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 100vh;
+    font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+    color: #fff; overflow: hidden;
+  }
+  #title-bar {
+    font-size: 20px; letter-spacing: 3px;
+    color: #c4b5fd; text-shadow: 0 0 14px #7c3aed;
+    margin-bottom: 6px; text-transform: uppercase; font-weight: bold;
+  }
+  /* HUD strip */
+  #hud {
+    display: flex; gap: 22px; align-items: center;
+    font-size: 14px; margin-bottom: 6px; color: #e0d7ff; letter-spacing: 1px;
+  }
+  #hud b { color: #facc15; }
+  #hearts { color: #f87171; letter-spacing: 2px; font-size: 16px; }
+
+  /* Game stage wrapper holds canvas + overlays */
+  #stage { position: relative; }
+  canvas {
+    display: block; border: 2px solid #7c3aed;
+    box-shadow: 0 0 34px #4c1d95; background: #02000a; border-radius: 6px;
+  }
+
+  #controls {
+    margin-top: 8px; font-size: 12px; color: #8b5cf6; letter-spacing: 1px; text-align: center;
+  }
+  #controls span { color: #c4b5fd; }
+
+  /* ===== OVERLAY (shop, win, game over, level transitions) ===== */
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; background: rgba(2,0,10,0.82); border-radius: 6px; padding: 20px;
+    text-align: center;
+  }
+  #overlay h1 {
+    font-size: 30px; color: #c4b5fd; text-shadow: 0 0 16px #7c3aed;
+    text-transform: uppercase; letter-spacing: 2px;
+  }
+  #overlay h2 { font-size: 18px; color: #facc15; }
+  #overlay p { font-size: 14px; color: #ddd6fe; max-width: 460px; line-height: 1.6; }
+  #overlay button {
+    padding: 9px 26px; font-size: 14px; font-family: inherit; font-weight: bold;
+    background: #4c1d95; color: #e9d5ff; border: 1.5px solid #7c3aed;
+    border-radius: 6px; cursor: pointer; letter-spacing: 1px; text-transform: uppercase;
+    transition: background .15s;
+  }
+  #overlay button:hover:not(:disabled) { background: #6d28d9; }
+  #overlay button:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* Shop layout */
+  #shop-items { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; max-width: 640px; }
+  .shop-card {
+    width: 190px; background: #1e1b4b; border: 1.5px solid #6d28d9; border-radius: 8px;
+    padding: 12px; display: flex; flex-direction: column; gap: 6px; align-items: center;
+  }
+  .shop-card .name { font-weight: bold; color: #e9d5ff; font-size: 14px; }
+  .shop-card .desc { font-size: 11px; color: #c4b5fd; line-height: 1.4; min-height: 30px; }
+  .shop-card .cost { font-size: 12px; color: #facc15; }
+  .shop-card button { padding: 6px 14px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="title-bar">⭐ Starshift: Furby Invasion ⭐</div>
+
+<div id="hud">
+  <div>LEVEL <b id="hud-level">1</b></div>
+  <div>SCORE <b id="hud-score">0</b></div>
+  <div>⭐ <b id="hud-stars">0</b></div>
+  <div id="hearts">♥♥♥</div>
+</div>
+
+<div id="stage">
+  <canvas id="gameCanvas" width="900" height="520"></canvas>
+  <div id="overlay"></div>
+</div>
+
+<div id="controls">
+  <span>← → / A D</span> move &nbsp;•&nbsp; <span>↑ / W / Space</span> jump &nbsp;•&nbsp;
+  <span>F / Click</span> electric ball &nbsp;•&nbsp; <span>E</span> shield &nbsp;•&nbsp; <span>Q</span> TANK mode
+</div>
+
+<script>
+/* =====================================================================
+   STARSHIFT: FURBY INVASION
+   A browser platformer. One file, no installs.
+   Big systems: cutscene, 30 levels, bosses, shop, abilities, sidekick.
+===================================================================== */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;   // 900
+const H = canvas.height;  // 520
+const overlay = document.getElementById('overlay');
+
+/* ---------- TOP-LEVEL GAME STATE ---------- */
+let state = 'cutscene';   // cutscene | playing | shop | transition | dead | win
+let currentLevel = 1;
+let score = 0;
+let starCoins = 0;        // collected stars = money for the shop
+let lastTime = 0;
+
+/* ---------- INPUT ---------- */
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (state === 'cutscene' && (e.code === 'Space' || e.code === 'Enter')) { advanceCutscene(); e.preventDefault(); }
+  if (state === 'playing') {
+    if (e.code === 'KeyF') throwBall();
+    if (e.code === 'KeyE') activateShield();
+    if (e.code === 'KeyQ') activateTank();
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { doJump(); e.preventDefault(); }
+  }
+});
+document.addEventListener('keyup', e => {
+  keys[e.code] = false;
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') jumpReleased = true;
+});
+// Click also throws a ball
+canvas.addEventListener('mousedown', () => { if (state === 'playing') throwBall(); });
+
+/* ---------- PHYSICS CONSTANTS ---------- */
+const GRAVITY = 0.6, JUMP_FORCE = -13, MOVE_SPEED = 4, MAX_FALL = 15;
+
+/* =====================================================================
+   PLAYER (ZYX - alien shapeshifter secret agent)
+===================================================================== */
+const PLAYER = {
+  x: 60, y: 380, w: 30, h: 42, vx: 0, vy: 0,
+  onGround: false, facingRight: true, phase: 0,
+  // health
+  maxHearts: 3, hearts: 3, invulnUntil: 0,
+  // ability stats (upgradable in shop)
+  ballDamage: 1,
+  cooldownMs: 3000,    // 3 second ball cooldown
+  shieldDurMs: 3000, shieldCdMs: 8000,
+  tankDurMs: 5000, tankCdMs: 12000,
+  // ability timers (timestamps)
+  lastBallAt: -99999,
+  shieldUntil: 0, shieldReadyAt: 0,
+  tankUntil: 0, tankReadyAt: 0,
+};
+let jumpReleased = true;
+
+function resetPlayerPosition() {
+  PLAYER.x = 60; PLAYER.y = 380; PLAYER.vx = 0; PLAYER.vy = 0; PLAYER.onGround = false;
+}
+
+/* Helper checks for active abilities */
+function isShielded(now) { return now < PLAYER.shieldUntil; }
+function isTank(now) { return now < PLAYER.tankUntil; }
+
+/* =====================================================================
+   OBJECT LISTS (filled per level)
+===================================================================== */
+let platforms = [];
+let stars = [];
+let furbies = [];
+let playerBalls = [];   // ZYX's electric bowling balls
+let furbyShots = [];    // enemy projectiles (they fight back!)
+let petShots = [];      // sidekick pellets
+let particles = [];
+
+/* =====================================================================
+   SIDEKICK: "GLORP" the alien space-pet
+===================================================================== */
+const PET = { x: 30, y: 360, bob: 0, lastShotAt: 0, shotCd: 2600 };
+
+/* =====================================================================
+   FURBY TYPES (colors do different things!)
+   brown = basic patrol, green = chases you, red = shoots back,
+   blue = super fast, purple = tanky + shoots
+===================================================================== */
+const FURBY_STYLE = {
+  brown:  { fur:'#8B5A2B', light:'#C8884A', belly:'#E6B36A', dark:'#5C3A1A', eye:'#ff3b3b' },
+  green:  { fur:'#2f7d32', light:'#66bb6a', belly:'#a5d6a7', dark:'#1b4d1e', eye:'#ffee58' },
+  red:    { fur:'#c62828', light:'#ef5350', belly:'#ff8a80', dark:'#7f0000', eye:'#fff59d' },
+  blue:   { fur:'#1565c0', light:'#42a5f5', belly:'#90caf9', dark:'#0d47a1', eye:'#ffffff' },
+  purple: { fur:'#6a1b9a', light:'#ab47bc', belly:'#ce93d8', dark:'#4a148c', eye:'#fff59d' },
+  boss:   { fur:'#4527a0', light:'#7e57c2', belly:'#b39ddb', dark:'#311b92', eye:'#ff1744' },
+  ceo:    { fur:'#1a1a2e', light:'#3949ab', belly:'#9fa8da', dark:'#0d0d1a', eye:'#ff1744' },
+};
+const FURBY_BASE = {
+  brown:  { hp:2, speed:1.2, behavior:'patrol', shoots:false, score:100 },
+  green:  { hp:2, speed:1.7, behavior:'chase',  shoots:false, score:150 },
+  red:    { hp:3, speed:1.0, behavior:'patrol', shoots:true,  score:200 },
+  blue:   { hp:1, speed:3.2, behavior:'patrol', shoots:false, score:120 },
+  purple: { hp:5, speed:0.7, behavior:'patrol', shoots:true,  score:280 },
+};
+
+/* =====================================================================
+   PLATFORM LAYOUT TEMPLATES (rotate across levels)
+   Ground is always present. Floating platforms vary.
+===================================================================== */
+const GROUND = { x:0, y:480, w:900, h:40 };
+const TEMPLATES = [
+  // Template A - stairs both sides
+  [ {x:60,y:380,w:130,h:16}, {x:230,y:310,w:110,h:16}, {x:120,y:240,w:120,h:16},
+    {x:400,y:360,w:120,h:16}, {x:390,y:250,w:120,h:16}, {x:420,y:150,w:90,h:16},
+    {x:640,y:380,w:130,h:16}, {x:680,y:300,w:110,h:16}, {x:620,y:210,w:120,h:16} ],
+  // Template B - floating islands
+  [ {x:90,y:340,w:150,h:16}, {x:330,y:300,w:160,h:16}, {x:580,y:340,w:150,h:16},
+    {x:200,y:200,w:120,h:16}, {x:480,y:190,w:130,h:16}, {x:700,y:230,w:120,h:16},
+    {x:380,y:120,w:140,h:16} ],
+  // Template C - zigzag climb
+  [ {x:50,y:400,w:140,h:16}, {x:260,y:350,w:120,h:16}, {x:80,y:280,w:120,h:16},
+    {x:300,y:240,w:130,h:16}, {x:120,y:170,w:130,h:16}, {x:500,y:330,w:140,h:16},
+    {x:680,y:270,w:130,h:16}, {x:560,y:180,w:120,h:16}, {x:740,y:150,w:120,h:16} ],
+];
+
+/* =====================================================================
+   LEVEL BUILDER
+===================================================================== */
+function buildLevel(n) {
+  platforms = [GROUND, ...TEMPLATES[(n - 1) % TEMPLATES.length]];
+  stars = []; furbies = []; playerBalls = []; furbyShots = []; petShots = []; particles = [];
+  resetPlayerPosition();
+
+  // Scatter a few collectible stars on platforms
+  const floatPlats = platforms.filter(p => p.h < 30);
+  floatPlats.forEach((p, i) => {
+    if (i % 2 === 0) stars.push({ x: p.x + p.w/2, y: p.y - 20, collected:false, tw: Math.random()*6 });
+  });
+  stars.push({ x: 200, y: 450, collected:false, tw: 1 });
+  stars.push({ x: 700, y: 450, collected:false, tw: 3 });
+
+  // Decide the level kind
+  if (n === 30) {
+    spawnFinalBoss();                 // FURBY CEO
+  } else if (n % 10 === 0) {
+    spawnLevelBoss(n);                // big boss
+  } else if (n % 5 === 0) {
+    spawnMiniBoss(n);                 // merged furbies
+  } else {
+    spawnNormalFurbies(n);           // regular wave
+  }
+
+  showLevelBanner(n);
+}
+
+/* Spawn a regular wave of furbies, scaling with level number */
+function spawnNormalFurbies(n) {
+  const count = Math.min(3 + Math.floor(n / 2), 8);
+  // Type pool grows as levels increase
+  let pool = ['brown', 'brown'];
+  if (n >= 2) pool.push('green');
+  if (n >= 3) pool.push('blue');
+  if (n >= 4) pool.push('red');
+  if (n >= 6) pool.push('purple');
+  if (n >= 7) pool.push('red', 'green');
+
+  for (let i = 0; i < count; i++) {
+    const type = pool[Math.floor(Math.random() * pool.length)];
+    const startX = 120 + Math.random() * (W - 240);
+    makeFurby(type, startX, 446, n);
+  }
+}
+
+/* Create one furby and push to list */
+function makeFurby(type, x, groundY, levelN) {
+  const base = FURBY_BASE[type];
+  const w = 34, h = 36;
+  // Higher levels = slightly tougher
+  const hp = base.hp + Math.floor(levelN / 8);
+  furbies.push({
+    type, x, y: groundY - h, w, h,
+    hp, maxHp: hp,
+    speed: base.speed, behavior: base.behavior, shoots: base.shoots,
+    scoreValue: base.score,
+    dir: Math.random() < 0.5 ? -1 : 1,
+    minX: Math.max(10, x - 140), maxX: Math.min(W - 10, x + 140),
+    walk: Math.random()*6, alive: true,
+    lastShotAt: 0, shotCd: 1800 + Math.random()*1200,
+    hurtFlash: 0, isBoss: false, scale: 1,
+  });
+}
+
+/* MINI-BOSS: two furbies merged into one bigger angry blob */
+function spawnMiniBoss(n) {
+  const hp = 18 + n;
+  furbies.push({
+    type: 'purple', x: W/2 - 45, y: 446 - 70, w: 90, h: 70,
+    hp, maxHp: hp, speed: 1.0, behavior: 'chase', shoots: true,
+    scoreValue: 1500, dir: 1, minX: 20, maxX: W - 110,
+    walk: 0, alive: true, lastShotAt: 0, shotCd: 1400,
+    hurtFlash: 0, isBoss: true, bossKind: 'mini', scale: 2,
+    name: 'MERGED MEGA-FURBY',
+  });
+}
+
+/* LEVEL BOSS: bigger, tougher, shoots spreads */
+function spawnLevelBoss(n) {
+  const hp = 30 + n * 2;
+  furbies.push({
+    type: 'boss', x: W/2 - 60, y: 446 - 90, w: 120, h: 90,
+    hp, maxHp: hp, speed: 1.3, behavior: 'chase', shoots: true,
+    scoreValue: 3000, dir: 1, minX: 20, maxX: W - 140,
+    walk: 0, alive: true, lastShotAt: 0, shotCd: 1100,
+    hurtFlash: 0, isBoss: true, bossKind: 'level', scale: 2.6,
+    name: 'FURBY WARLORD',
+  });
+  // a couple of minions
+  makeFurby('red', 150, 446, n);
+  makeFurby('green', 750, 446, n);
+}
+
+/* FINAL BOSS: the FURBY CEO */
+function spawnFinalBoss() {
+  const hp = 120;
+  furbies.push({
+    type: 'ceo', x: W/2 - 75, y: 446 - 120, w: 150, h: 120,
+    hp, maxHp: hp, speed: 1.5, behavior: 'chase', shoots: true,
+    scoreValue: 10000, dir: 1, minX: 20, maxX: W - 170,
+    walk: 0, alive: true, lastShotAt: 0, shotCd: 800,
+    hurtFlash: 0, isBoss: true, bossKind: 'ceo', scale: 3.2,
+    name: 'THE FURBY C.E.O.',
+  });
+}
+
+/* =====================================================================
+   PLAYER ACTIONS
+===================================================================== */
+function doJump() {
+  if (PLAYER.onGround && jumpReleased) {
+    PLAYER.vy = JUMP_FORCE; PLAYER.onGround = false; jumpReleased = false;
+  }
+}
+
+function throwBall() {
+  const now = performance.now();
+  if (now - PLAYER.lastBallAt < PLAYER.cooldownMs) return; // still cooling down
+  PLAYER.lastBallAt = now;
+  const big = isTank(now);
+  playerBalls.push({
+    x: PLAYER.x + (PLAYER.facingRight ? PLAYER.w : 0),
+    y: PLAYER.y + PLAYER.h/2,
+    vx: (PLAYER.facingRight ? 9 : -9), vy: -2,
+    r: big ? 16 : 10,
+    dmg: PLAYER.ballDamage * (big ? 2 : 1),
+    age: 0, alive: true,
+  });
+}
+
+function activateShield() {
+  const now = performance.now();
+  if (now < PLAYER.shieldReadyAt) return;
+  PLAYER.shieldUntil = now + PLAYER.shieldDurMs;
+  PLAYER.shieldReadyAt = now + PLAYER.shieldDurMs + PLAYER.shieldCdMs;
+}
+
+function activateTank() {
+  const now = performance.now();
+  if (now < PLAYER.tankReadyAt) return;
+  PLAYER.tankUntil = now + PLAYER.tankDurMs;
+  PLAYER.tankReadyAt = now + PLAYER.tankDurMs + PLAYER.tankCdMs;
+  spawnParticles(PLAYER.x + PLAYER.w/2, PLAYER.y + PLAYER.h/2, '#a78bfa', 16);
+}
+
+/* =====================================================================
+   PARTICLES
+===================================================================== */
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y, vx:(Math.random()-0.5)*6, vy:(Math.random()-1.5)*5,
+      life:1, decay:0.03+Math.random()*0.03, r:3+Math.random()*4, color,
+    });
+  }
+}
+
+/* =====================================================================
+   COLLISION HELPERS
+===================================================================== */
+function overlap(ax,ay,aw,ah,bx,by,bw,bh){
+  return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by;
+}
+function resolvePlatforms() {
+  PLAYER.onGround = false;
+  for (const p of platforms) {
+    if (!overlap(PLAYER.x,PLAYER.y,PLAYER.w,PLAYER.h,p.x,p.y,p.w,p.h)) continue;
+    const oL=(PLAYER.x+PLAYER.w)-p.x, oR=(p.x+p.w)-PLAYER.x;
+    const oT=(PLAYER.y+PLAYER.h)-p.y, oB=(p.y+p.h)-PLAYER.y;
+    const m=Math.min(oL,oR,oT,oB);
+    if (m===oT && PLAYER.vy>=0){ PLAYER.y=p.y-PLAYER.h; PLAYER.vy=0; PLAYER.onGround=true; }
+    else if (m===oB && PLAYER.vy<0){ PLAYER.y=p.y+p.h; PLAYER.vy=0; }
+    else if (m===oL){ PLAYER.x=p.x-PLAYER.w; }
+    else if (m===oR){ PLAYER.x=p.x+p.w; }
+  }
+}
+
+/* Damage the player (respects shield / tank / invuln) */
+function hurtPlayer() {
+  const now = performance.now();
+  if (isShielded(now) || isTank(now) || now < PLAYER.invulnUntil) return;
+  PLAYER.hearts--;
+  PLAYER.invulnUntil = now + 1200;   // brief mercy invincibility
+  spawnParticles(PLAYER.x+PLAYER.w/2, PLAYER.y, '#f87171', 14);
+  updateHUD();
+  if (PLAYER.hearts <= 0) gameOver();
+}
+
+/* =====================================================================
+   UPDATE LOGIC
+===================================================================== */
+function update(dt) {
+  if (state !== 'playing') return;
+  const now = performance.now();
+
+  /* ----- PLAYER MOVE ----- */
+  const speed = isTank(now) ? MOVE_SPEED * 0.8 : MOVE_SPEED;
+  if (keys['ArrowLeft'] || keys['KeyA']) { PLAYER.vx = -speed; PLAYER.facingRight = false; }
+  else if (keys['ArrowRight'] || keys['KeyD']) { PLAYER.vx = speed; PLAYER.facingRight = true; }
+  else PLAYER.vx *= 0.75;
+
+  PLAYER.vy += GRAVITY;
+  if (PLAYER.vy > MAX_FALL) PLAYER.vy = MAX_FALL;
+  PLAYER.x += PLAYER.vx; PLAYER.y += PLAYER.vy;
+  if (PLAYER.x < 0) PLAYER.x = 0;
+  if (PLAYER.x + PLAYER.w > W) PLAYER.x = W - PLAYER.w;
+  resolvePlatforms();
+  PLAYER.phase += 0.06;
+
+  if (PLAYER.y > H + 60) { hurtPlayer(); resetPlayerPosition(); }
+
+  /* ----- SIDEKICK PET ----- */
+  PET.bob += 0.08;
+  const targetX = PLAYER.x - 30 + Math.sin(PET.bob)*4;
+  const targetY = PLAYER.y - 26 + Math.cos(PET.bob)*5;
+  PET.x += (targetX - PET.x) * 0.08;
+  PET.y += (targetY - PET.y) * 0.08;
+  // Pet auto-fires a pellet at nearest furby on a slow timer
+  if (now - PET.lastShotAt > PET.shotCd) {
+    const target = nearestFurby(PET.x, PET.y);
+    if (target) {
+      PET.lastShotAt = now;
+      const ang = Math.atan2((target.y+target.h/2) - PET.y, (target.x+target.w/2) - PET.x);
+      petShots.push({ x:PET.x, y:PET.y, vx:Math.cos(ang)*6, vy:Math.sin(ang)*6, alive:true, age:0 });
+    }
+  }
+
+  /* ----- STARS ----- */
+  for (const s of stars) {
+    if (s.collected) continue;
+    if (overlap(PLAYER.x,PLAYER.y,PLAYER.w,PLAYER.h, s.x-10,s.y-10,20,20)) {
+      s.collected = true; starCoins++; score += 50;
+      spawnParticles(s.x, s.y, '#facc15', 10); updateHUD();
+    }
+  }
+
+  /* ----- PLAYER BALLS ----- */
+  for (const b of playerBalls) {
+    if (!b.alive) continue;
+    b.x += b.vx; b.vy += GRAVITY*0.35; b.y += b.vy; b.age++;
+    // bounce-stop on platforms
+    for (const p of platforms) {
+      if (overlap(b.x-b.r,b.y-b.r,b.r*2,b.r*2, p.x,p.y,p.w,p.h)) {
+        if (b.y < p.y) { b.y = p.y - b.r; b.vy = 0; b.vx *= 0.9; } // roll on top
+      }
+    }
+    if (b.x < -60 || b.x > W+60 || b.y > H+40) b.alive = false;
+    // hit furbies
+    for (const f of furbies) {
+      if (!f.alive || !b.alive) continue;
+      if (overlap(b.x-b.r,b.y-b.r,b.r*2,b.r*2, f.x,f.y,f.w,f.h)) {
+        damageFurby(f, b.dmg);
+        if (!f.isBoss) b.alive = false; // small furbies stop the ball; bosses let it pass
+        spawnParticles(b.x, b.y, '#60a5fa', 8);
+      }
+    }
+  }
+  playerBalls = playerBalls.filter(b => b.alive && b.age < 600);
+
+  /* ----- PET SHOTS ----- */
+  for (const s of petShots) {
+    if (!s.alive) continue;
+    s.x += s.vx; s.y += s.vy; s.age++;
+    if (s.x<-20||s.x>W+20||s.y<-20||s.y>H+20) s.alive=false;
+    for (const f of furbies) {
+      if (!f.alive || !s.alive) continue;
+      if (overlap(s.x-4,s.y-4,8,8, f.x,f.y,f.w,f.h)) { damageFurby(f, 1); s.alive=false; }
+    }
+  }
+  petShots = petShots.filter(s => s.alive);
+
+  /* ----- FURBIES ----- */
+  for (const f of furbies) {
+    if (!f.alive) continue;
+    f.walk += 0.12;
+    if (f.hurtFlash > 0) f.hurtFlash--;
+
+    if (f.behavior === 'chase') {
+      // walk toward the player
+      f.dir = (PLAYER.x + PLAYER.w/2) > (f.x + f.w/2) ? 1 : -1;
+      f.x += f.dir * f.speed;
+      f.facingRight = f.dir > 0;
+    } else {
+      // patrol back and forth
+      f.x += f.dir * f.speed;
+      if (f.x <= f.minX || f.x + f.w >= f.maxX) f.dir *= -1;
+      f.facingRight = f.dir > 0;
+    }
+    if (f.x < 0) f.x = 0;
+    if (f.x + f.w > W) f.x = W - f.w;
+
+    // shooting furbies fire back
+    if (f.shoots && now - f.lastShotAt > f.shotCd) {
+      f.lastShotAt = now;
+      fireFurbyShot(f);
+    }
+
+    // touching the player hurts
+    if (overlap(PLAYER.x,PLAYER.y,PLAYER.w,PLAYER.h, f.x,f.y,f.w,f.h)) {
+      // In tank form we squash small furbies on contact instead of taking damage
+      if (isTank(now) && !f.isBoss) { damageFurby(f, 3); }
+      else hurtPlayer();
+    }
+  }
+
+  /* ----- FURBY SHOTS ----- */
+  for (const s of furbyShots) {
+    if (!s.alive) continue;
+    s.x += s.vx; s.y += s.vy; s.age++;
+    if (s.x<-30||s.x>W+30||s.y<-30||s.y>H+30) s.alive=false;
+    if (overlap(s.x-6,s.y-6,12,12, PLAYER.x,PLAYER.y,PLAYER.w,PLAYER.h)) { hurtPlayer(); s.alive=false; }
+  }
+  furbyShots = furbyShots.filter(s => s.alive);
+
+  /* ----- PARTICLES ----- */
+  for (const p of particles){ p.x+=p.vx; p.y+=p.vy; p.vy+=0.12; p.life-=p.decay; }
+  particles = particles.filter(p => p.life > 0);
+
+  /* ----- WIN LEVEL = all furbies defeated ----- */
+  if (furbies.length > 0 && furbies.every(f => !f.alive)) levelComplete();
+}
+
+function nearestFurby(x, y) {
+  let best=null, bd=1e9;
+  for (const f of furbies){ if(!f.alive) continue;
+    const d=(f.x-x)**2+(f.y-y)**2; if(d<bd){bd=d;best=f;} }
+  return best;
+}
+
+function fireFurbyShot(f) {
+  const cx=f.x+f.w/2, cy=f.y+f.h/2;
+  const ang = Math.atan2((PLAYER.y+PLAYER.h/2)-cy, (PLAYER.x+PLAYER.w/2)-cx);
+  if (f.bossKind === 'level' || f.bossKind === 'ceo') {
+    // spread shot
+    for (let a=-0.3; a<=0.3; a+=0.3) {
+      furbyShots.push({ x:cx, y:cy, vx:Math.cos(ang+a)*4.5, vy:Math.sin(ang+a)*4.5, alive:true, age:0 });
+    }
+  } else {
+    furbyShots.push({ x:cx, y:cy, vx:Math.cos(ang)*4, vy:Math.sin(ang)*4, alive:true, age:0 });
+  }
+}
+
+function damageFurby(f, dmg) {
+  f.hp -= dmg; f.hurtFlash = 6;
+  if (f.hp <= 0) {
+    f.alive = false;
+    score += f.scoreValue;
+    spawnParticles(f.x+f.w/2, f.y+f.h/2, '#fb923c', f.isBoss?40:16);
+    spawnParticles(f.x+f.w/2, f.y+f.h/2, '#facc15', f.isBoss?24:8);
+    updateHUD();
+  }
+}
+
+/* =====================================================================
+   LEVEL FLOW: complete -> shop or next -> win
+===================================================================== */
+function levelComplete() {
+  state = 'transition';
+  const nextLevel = currentLevel + 1;
+  if (currentLevel >= 30) { winGame(); return; }
+  // Shop appears before every boss/mini-boss level (every 5th level)
+  if (nextLevel % 5 === 0) {
+    showOverlay(`<h1>Level ${currentLevel} clear!</h1>
+      <p>A boss is coming up next. Visit the SHOP to power up first!</p>
+      <button onclick="openShop()">🛒 Go to shop</button>`);
+  } else {
+    showOverlay(`<h1>Level ${currentLevel} clear!</h1>
+      <h2>Score: ${score} &nbsp; ⭐ ${starCoins}</h2>
+      <button onclick="startNextLevel()">▶ Next level</button>`);
+  }
+}
+
+function startNextLevel() {
+  currentLevel++;
+  hideOverlay();
+  state = 'playing';
+  buildLevel(currentLevel);
+  updateHUD();
+}
+
+function gameOver() {
+  state = 'dead';
+  showOverlay(`<h1>☠ Game Over</h1>
+    <p>The Furbies overwhelmed ZYX on level ${currentLevel}.</p>
+    <h2>Final Score: ${score}</h2>
+    <button onclick="restartGame()">↻ Try again</button>`);
+}
+
+function winGame() {
+  state = 'win';
+  showOverlay(`<h1>🌠 You Win!</h1>
+    <p>ZYX defeated the FURBY C.E.O., ended the uprising, and rescued his family!
+       The planet Lumara is safe again.</p>
+    <h2>Final Score: ${score}</h2>
+    <button onclick="restartGame()">↻ Play again</button>`);
+}
+
+function restartGame() {
+  currentLevel = 1; score = 0; starCoins = 0;
+  PLAYER.maxHearts = 3; PLAYER.hearts = 3;
+  PLAYER.ballDamage = 1; PLAYER.cooldownMs = 3000;
+  PLAYER.shieldDurMs = 3000; PLAYER.tankDurMs = 5000;
+  PLAYER.shieldUntil=0; PLAYER.shieldReadyAt=0; PLAYER.tankUntil=0; PLAYER.tankReadyAt=0;
+  hideOverlay();
+  state = 'playing';
+  buildLevel(1);
+  updateHUD();
+}
+
+/* =====================================================================
+   SHOP (spend collected stars to power up before bosses)
+===================================================================== */
+const SHOP_ITEMS = [
+  { id:'heart', name:'Extra Heart ♥', desc:'Add +1 max heart and heal up.', cost:6,
+    buy(){ PLAYER.maxHearts++; PLAYER.hearts = PLAYER.maxHearts; } },
+  { id:'heal', name:'Full Heal', desc:'Refill all your hearts.', cost:3,
+    buy(){ PLAYER.hearts = PLAYER.maxHearts; } },
+  { id:'dmg', name:'Stronger Balls', desc:'Electric balls do +1 damage.', cost:8,
+    buy(){ PLAYER.ballDamage++; } },
+  { id:'cd', name:'Faster Throw', desc:'Lower ball cooldown by 0.5s.', cost:7,
+    buy(){ PLAYER.cooldownMs = Math.max(1000, PLAYER.cooldownMs - 500); } },
+  { id:'shield', name:'Longer Shield', desc:'Shield lasts +1 second.', cost:5,
+    buy(){ PLAYER.shieldDurMs += 1000; } },
+  { id:'tank', name:'Longer TANK', desc:'Tank mode lasts +1.5 seconds.', cost:5,
+    buy(){ PLAYER.tankDurMs += 1500; } },
+];
+
+function openShop() {
+  state = 'shop';
+  renderShop();
+}
+
+function renderShop() {
+  let cards = SHOP_ITEMS.map(it => {
+    const afford = starCoins >= it.cost;
+    return `<div class="shop-card">
+      <div class="name">${it.name}</div>
+      <div class="desc">${it.desc}</div>
+      <div class="cost">Cost: ⭐ ${it.cost}</div>
+      <button onclick="buyItem('${it.id}')" ${afford?'':'disabled'}>Buy</button>
+    </div>`;
+  }).join('');
+  showOverlay(`<h1>🛒 Star Shop</h1>
+    <h2>You have ⭐ ${starCoins} stars</h2>
+    <div id="shop-items">${cards}</div>
+    <button onclick="startNextLevel()">▶ Continue to boss</button>`);
+}
+
+function buyItem(id) {
+  const it = SHOP_ITEMS.find(x => x.id === id);
+  if (!it || starCoins < it.cost) return;
+  starCoins -= it.cost;
+  it.buy();
+  updateHUD();
+  renderShop(); // refresh prices/affordability
+}
+
+/* =====================================================================
+   OVERLAY HELPERS
+===================================================================== */
+function showOverlay(html){ overlay.innerHTML = html; overlay.style.display = 'flex'; }
+function hideOverlay(){ overlay.style.display = 'none'; overlay.innerHTML = ''; }
+
+/* A quick on-canvas "LEVEL N" banner */
+let bannerText = '', bannerUntil = 0;
+function showLevelBanner(n) {
+  if (n === 30) bannerText = 'FINAL BOSS: FURBY CEO!';
+  else if (n % 10 === 0) bannerText = 'LEVEL BOSS!';
+  else if (n % 5 === 0) bannerText = 'MINI-BOSS!';
+  else bannerText = 'LEVEL ' + n;
+  bannerUntil = performance.now() + 1800;
+}
+
+/* =====================================================================
+   HUD
+===================================================================== */
+function updateHUD() {
+  document.getElementById('hud-level').textContent = currentLevel;
+  document.getElementById('hud-score').textContent = score;
+  document.getElementById('hud-stars').textContent = starCoins;
+  document.getElementById('hearts').textContent =
+    '♥'.repeat(Math.max(0,PLAYER.hearts)) + '♡'.repeat(Math.max(0, PLAYER.maxHearts - PLAYER.hearts));
+}
+
+/* =====================================================================
+   ===============  DRAWING (detailed / shaded look)  ===============
+===================================================================== */
+
+/* Background: deep-space nebula with glowing stars */
+let bgStars = [];
+for (let i=0;i<90;i++) bgStars.push({ x:Math.random()*W, y:Math.random()*H, r:Math.random()*1.6+0.3, tw:Math.random()*6 });
+
+function drawBackground(now) {
+  // gradient sky
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0b0220'); g.addColorStop(0.5,'#12043a'); g.addColorStop(1,'#04010f');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  // soft nebula blobs
+  for (const [bx,by,br,col] of [[200,140,220,'rgba(124,58,237,0.10)'],[680,200,260,'rgba(37,99,235,0.10)'],[450,420,300,'rgba(217,70,239,0.07)']]) {
+    const rg = ctx.createRadialGradient(bx,by,0,bx,by,br);
+    rg.addColorStop(0,col); rg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle = rg; ctx.fillRect(0,0,W,H);
+  }
+  // twinkling stars
+  for (const s of bgStars) {
+    s.tw += 0.03;
+    ctx.globalAlpha = 0.4 + 0.6*Math.abs(Math.sin(s.tw));
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* Platforms: metallic slab with gradient + glowing rim */
+function drawPlatforms() {
+  for (const p of platforms) {
+    const g = ctx.createLinearGradient(0,p.y,0,p.y+p.h);
+    if (p.h > 30) { g.addColorStop(0,'#2a2150'); g.addColorStop(1,'#0e0826'); }
+    else { g.addColorStop(0,'#4338ca'); g.addColorStop(1,'#1e1b4b'); }
+    ctx.fillStyle = g;
+    roundRect(p.x,p.y,p.w,p.h,6); ctx.fill();
+    // glowing top edge
+    ctx.fillStyle = '#a5b4fc';
+    ctx.shadowColor = '#818cf8'; ctx.shadowBlur = 8;
+    ctx.fillRect(p.x+3, p.y, p.w-6, 2);
+    ctx.shadowBlur = 0;
+  }
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+/* Collectible shooting star with a little tail + glow */
+function drawStars() {
+  for (const s of stars) {
+    if (s.collected) continue;
+    s.tw += 0.06;
+    const sz = 8 + 2*Math.sin(s.tw);
+    // glow
+    const rg = ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,sz+10);
+    rg.addColorStop(0,'rgba(254,240,138,0.9)'); rg.addColorStop(1,'rgba(254,240,138,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(s.x,s.y,sz+10,0,Math.PI*2); ctx.fill();
+    // 5-point star
+    ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(s.tw*0.2);
+    ctx.fillStyle = '#fde047';
+    ctx.beginPath();
+    for (let i=0;i<10;i++){ const a=(i*Math.PI)/5 - Math.PI/2; const r=i%2?sz*0.45:sz;
+      const px=Math.cos(a)*r, py=Math.sin(a)*r; i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* Sidekick pet "Glorp": floaty round alien with one big eye and antennae */
+function drawPet() {
+  const x = PET.x, y = PET.y, bob = Math.sin(PET.bob)*2;
+  // glow
+  const rg = ctx.createRadialGradient(x,y+bob,0,x,y+bob,22);
+  rg.addColorStop(0,'rgba(94,234,212,0.5)'); rg.addColorStop(1,'rgba(94,234,212,0)');
+  ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x,y+bob,22,0,Math.PI*2); ctx.fill();
+  // body
+  const bg = ctx.createRadialGradient(x-4,y-4+bob,2,x,y+bob,14);
+  bg.addColorStop(0,'#a7f3d0'); bg.addColorStop(1,'#14b8a6');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(x,y+bob,13,0,Math.PI*2); ctx.fill();
+  // antennae
+  ctx.strokeStyle='#5eead4'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(x-5,y-10+bob); ctx.lineTo(x-8,y-18+bob); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+5,y-10+bob); ctx.lineTo(x+8,y-18+bob); ctx.stroke();
+  ctx.fillStyle='#fde047';
+  ctx.beginPath(); ctx.arc(x-8,y-18+bob,2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+8,y-18+bob,2,0,Math.PI*2); ctx.fill();
+  // big eye
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x,y+bob,6,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#0f766e'; ctx.beginPath(); ctx.arc(x+1.5,y+1+bob,3,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x+2.5,y+bob,1,0,Math.PI*2); ctx.fill();
+}
+
+/* Player ZYX: shaded alien kid with aura; changes form in TANK mode */
+function drawPlayer(now) {
+  const cx = PLAYER.x + PLAYER.w/2, cy = PLAYER.y + PLAYER.h/2;
+  const flicker = now < PLAYER.invulnUntil ? (Math.sin(now/60)>0?0.4:1) : 1;
+  ctx.save(); ctx.globalAlpha = flicker;
+
+  // soft shadow on ground
+  ctx.globalAlpha = flicker*0.25; ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.ellipse(cx, PLAYER.y+PLAYER.h+4, 16, 5, 0,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha = flicker;
+
+  if (isTank(now)) { drawTankForm(cx, cy, now); ctx.restore(); drawShield(now, cx, cy); return; }
+
+  ctx.save(); ctx.translate(cx, cy); if (!PLAYER.facingRight) ctx.scale(-1,1);
+  const wob = Math.sin(PLAYER.phase*1.3)*1.5;
+
+  // aura
+  const ag = ctx.createRadialGradient(0,4,4,0,4,26);
+  ag.addColorStop(0,'rgba(167,139,250,0.4)'); ag.addColorStop(1,'rgba(167,139,250,0)');
+  ctx.fillStyle = ag; ctx.beginPath(); ctx.ellipse(0,4,22,28,0,0,Math.PI*2); ctx.fill();
+
+  // body (shaded)
+  const bg = ctx.createLinearGradient(-10,-4,10,18);
+  bg.addColorStop(0,'#ddd6fe'); bg.addColorStop(1,'#8b5cf6');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(wob*0.3,7,11,14,0,0,Math.PI*2); ctx.fill();
+
+  // head
+  const hg = ctx.createRadialGradient(-3,-12,2,0,-8,12);
+  hg.addColorStop(0,'#f5f3ff'); hg.addColorStop(1,'#c4b5fd');
+  ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(wob*0.2,-9,10,0,Math.PI*2); ctx.fill();
+
+  // big alien eyes
+  ctx.fillStyle='#0f0a2e';
+  ctx.beginPath(); ctx.ellipse(-4,-9,3.6,4.4,-0.2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(4,-9,3.6,4.4,0.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#a78bfa';
+  ctx.beginPath(); ctx.arc(-3,-10,1.4,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5,-10,1.4,0,Math.PI*2); ctx.fill();
+
+  // limbs
+  ctx.strokeStyle='#a78bfa'; ctx.lineWidth=4; ctx.lineCap='round';
+  const sw = PLAYER.onGround ? Math.sin(PLAYER.phase*1.8)*8 : 4;
+  ctx.beginPath(); ctx.moveTo(-8,2); ctx.lineTo(-13,8+sw); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(8,2); ctx.lineTo(13,8-sw); ctx.stroke();
+  ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(-4,16); ctx.lineTo(-6,24+sw); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4,16); ctx.lineTo(6,24-sw); ctx.stroke();
+
+  ctx.restore();
+  ctx.restore();
+  drawShield(now, cx, cy);
+}
+
+/* TANK / monster form */
+function drawTankForm(cx, cy, now) {
+  ctx.save(); ctx.translate(cx, cy); if (!PLAYER.facingRight) ctx.scale(-1,1);
+  // glow
+  const ag = ctx.createRadialGradient(0,0,4,0,0,34);
+  ag.addColorStop(0,'rgba(124,58,237,0.5)'); ag.addColorStop(1,'rgba(124,58,237,0)');
+  ctx.fillStyle = ag; ctx.beginPath(); ctx.arc(0,0,34,0,Math.PI*2); ctx.fill();
+  // big armored body
+  const bg = ctx.createLinearGradient(-22,-18,22,22);
+  bg.addColorStop(0,'#7c3aed'); bg.addColorStop(1,'#4c1d95');
+  ctx.fillStyle = bg; roundRect(-22,-16,44,38,8); ctx.fill();
+  // spikes
+  ctx.fillStyle='#c4b5fd';
+  for (let i=-1;i<=1;i++){ ctx.beginPath(); ctx.moveTo(i*12,-16); ctx.lineTo(i*12-5,-26); ctx.lineTo(i*12+5,-26); ctx.fill(); }
+  // angry eyes
+  ctx.fillStyle='#fde047';
+  ctx.beginPath(); ctx.moveTo(-12,-6); ctx.lineTo(-3,-2); ctx.lineTo(-12,2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(12,-6); ctx.lineTo(3,-2); ctx.lineTo(12,2); ctx.fill();
+  // mouth
+  ctx.fillStyle='#1e1b4b'; ctx.fillRect(-8,8,16,5);
+  ctx.fillStyle='#fff';
+  for(let i=0;i<4;i++) ctx.fillRect(-8+i*4,8,2,5);
+  ctx.restore();
+}
+
+/* Force-field shield bubble */
+function drawShield(now, cx, cy) {
+  if (!isShielded(now)) return;
+  const t = (PLAYER.shieldUntil - now);
+  const pulse = 1 + 0.05*Math.sin(now/80);
+  ctx.save();
+  ctx.globalAlpha = t < 600 ? (Math.sin(now/50)>0?0.7:0.3) : 0.55; // flicker when running out
+  const rg = ctx.createRadialGradient(cx,cy,10,cx,cy,30*pulse);
+  rg.addColorStop(0,'rgba(56,189,248,0)'); rg.addColorStop(0.7,'rgba(56,189,248,0.15)'); rg.addColorStop(1,'rgba(125,211,252,0.7)');
+  ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx,cy,30*pulse,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#7dd3fc'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(cx,cy,30*pulse,0,Math.PI*2); ctx.stroke();
+  ctx.restore();
+}
+
+/* A furby (colored type or boss) with fluffy shaded fur */
+function drawFurby(f, now) {
+  if (!f.alive) return;
+  const st = FURBY_STYLE[f.type] || FURBY_STYLE.brown;
+  const cx = f.x + f.w/2, cy = f.y + f.h/2;
+  const hurt = f.hurtFlash > 0;
+
+  ctx.save(); ctx.translate(cx, cy);
+  if (f.facingRight === false) {} // furbies are symmetric, no flip needed
+
+  // ground shadow
+  ctx.globalAlpha = 0.25; ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.ellipse(0, f.h/2+3, f.w*0.45, 5, 0,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const bw = f.w*0.5, bh = f.h*0.55;
+
+  // body gradient
+  const bg = ctx.createRadialGradient(-bw*0.3,-bh*0.3,2,0,0,bw*1.3);
+  bg.addColorStop(0, hurt?'#fff': st.light); bg.addColorStop(1, st.fur);
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.ellipse(0, 4, bw, bh, 0,0,Math.PI*2); ctx.fill();
+
+  // fluffy fur edge (little spikes around body)
+  ctx.strokeStyle = hurt? '#fff' : st.dark; ctx.lineWidth = 2;
+  for (let i=0;i<22;i++){
+    const a = (i/22)*Math.PI*2; const r1 = bw*0.96, r2 = bw*1.12;
+    const wob = Math.sin(f.walk + i)*1.5;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*r1, 4+Math.sin(a)*bh*0.96);
+    ctx.lineTo(Math.cos(a)*(r2+wob), 4+Math.sin(a)*(bh*1.12+wob));
+    ctx.stroke();
+  }
+
+  // belly patch
+  ctx.fillStyle = st.belly;
+  ctx.beginPath(); ctx.ellipse(0, 8, bw*0.5, bh*0.55, 0,0,Math.PI*2); ctx.fill();
+
+  // ears
+  ctx.fillStyle = st.dark;
+  ctx.beginPath(); ctx.moveTo(-bw*0.55,-bh*0.4); ctx.lineTo(-bw*0.9,-bh*1.1); ctx.lineTo(-bw*0.2,-bh*0.6); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(bw*0.55,-bh*0.4); ctx.lineTo(bw*0.9,-bh*1.1); ctx.lineTo(bw*0.2,-bh*0.6); ctx.fill();
+
+  // CEO gets a tie + crown; level boss gets a crown
+  if (f.bossKind === 'ceo') {
+    ctx.fillStyle='#fde047';
+    ctx.beginPath(); ctx.moveTo(-12,-bh*1.0); ctx.lineTo(-6,-bh*1.35); ctx.lineTo(0,-bh*1.0);
+    ctx.lineTo(6,-bh*1.35); ctx.lineTo(12,-bh*1.0); ctx.fill();
+    ctx.fillStyle='#ef4444';
+    ctx.beginPath(); ctx.moveTo(-5,bh*0.4); ctx.lineTo(5,bh*0.4); ctx.lineTo(0,bh*1.1); ctx.fill();
+  } else if (f.bossKind === 'level') {
+    ctx.fillStyle='#fde047';
+    ctx.beginPath(); ctx.moveTo(-10,-bh*0.95); ctx.lineTo(-5,-bh*1.25); ctx.lineTo(0,-bh*0.95);
+    ctx.lineTo(5,-bh*1.25); ctx.lineTo(10,-bh*0.95); ctx.fill();
+  }
+
+  // glowing evil eyes
+  const eg = 0.6 + 0.4*Math.sin(f.walk*2);
+  const eyeR = bw*0.16 + 1;
+  ctx.save(); ctx.globalAlpha = eg; ctx.fillStyle = st.eye;
+  ctx.shadowColor = st.eye; ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.arc(-bw*0.3,-bh*0.15,eyeR,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(bw*0.3,-bh*0.15,eyeR,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // pupils
+  ctx.fillStyle='#1a0000';
+  ctx.beginPath(); ctx.arc(-bw*0.3,-bh*0.15,eyeR*0.45,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(bw*0.3,-bh*0.15,eyeR*0.45,0,Math.PI*2); ctx.fill();
+
+  // beak
+  ctx.fillStyle='#fbbf24';
+  ctx.beginPath(); ctx.moveTo(0,bh*0.05); ctx.lineTo(-bw*0.18,bh*0.3); ctx.lineTo(bw*0.18,bh*0.3); ctx.fill();
+
+  ctx.restore();
+
+  // health bar (only show if damaged or boss)
+  if (f.hp < f.maxHp || f.isBoss) {
+    const bw2 = f.w, bx = f.x, by = f.y - 10;
+    ctx.fillStyle='#000'; ctx.fillRect(bx,by,bw2,5);
+    ctx.fillStyle = f.isBoss ? '#ef4444' : '#22c55e';
+    ctx.fillRect(bx,by,bw2*(Math.max(0,f.hp)/f.maxHp),5);
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw2,5);
+    if (f.isBoss && f.name) {
+      ctx.fillStyle='#fff'; ctx.font='bold 11px Trebuchet MS'; ctx.textAlign='center';
+      ctx.fillText(f.name, cx, by - 6); ctx.textAlign='left';
+    }
+  }
+}
+
+/* Electric bowling ball with lightning aura */
+function drawBall(b) {
+  ctx.save(); ctx.translate(b.x, b.y);
+  // outer electric glow
+  const rg = ctx.createRadialGradient(0,0,b.r*0.4,0,0,b.r+8);
+  rg.addColorStop(0,'rgba(96,165,250,0.6)'); rg.addColorStop(1,'rgba(96,165,250,0)');
+  ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(0,0,b.r+8,0,Math.PI*2); ctx.fill();
+  // ball
+  const bg = ctx.createRadialGradient(-b.r*0.3,-b.r*0.3,2,0,0,b.r);
+  bg.addColorStop(0,'#93c5fd'); bg.addColorStop(1,'#1d4ed8');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(0,0,b.r,0,Math.PI*2); ctx.fill();
+  // lightning arcs
+  ctx.strokeStyle='#fde68a'; ctx.lineWidth=1.5; ctx.shadowColor='#fde68a'; ctx.shadowBlur=6;
+  for (let i=0;i<5;i++){
+    const a = (i/5)*Math.PI*2 + b.age*0.3;
+    const r1=b.r+3, r2=b.r+8+Math.sin(b.age*0.5+i)*3;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);
+    ctx.lineTo(Math.cos(a+0.2)*r2,Math.sin(a+0.2)*r2);
+    ctx.lineTo(Math.cos(a+0.4)*(r1+2),Math.sin(a+0.4)*(r1+2));
+    ctx.stroke();
+  }
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+function drawFurbyShot(s) {
+  const rg = ctx.createRadialGradient(s.x,s.y,1,s.x,s.y,9);
+  rg.addColorStop(0,'#fecaca'); rg.addColorStop(1,'#ef4444');
+  ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(s.x,s.y,6,0,Math.PI*2); ctx.fill();
+}
+function drawPetShot(s) {
+  ctx.fillStyle='#5eead4'; ctx.beginPath(); ctx.arc(s.x,s.y,4,0,Math.PI*2); ctx.fill();
+}
+
+function drawParticles() {
+  for (const p of particles){
+    ctx.save(); ctx.globalAlpha=p.life; ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2); ctx.fill(); ctx.restore();
+  }
+}
+
+/* Small ability cooldown bars (top-left of canvas) */
+function drawAbilityBars(now) {
+  const bars = [
+    { label:'BALL',  ready: now - PLAYER.lastBallAt, max: PLAYER.cooldownMs, col:'#60a5fa' },
+    { label:'SHIELD',ready: now - (PLAYER.shieldReadyAt - 0), max: 1, special:'shield' },
+    { label:'TANK',  ready: 1, max:1, special:'tank' },
+  ];
+  let y = 12;
+  // BALL cooldown
+  drawCdBar(12, y, 'BALL', Math.min(1,(now-PLAYER.lastBallAt)/PLAYER.cooldownMs), '#60a5fa'); y+=18;
+  // SHIELD: show remaining cooldown until ready
+  let sFrac = now >= PLAYER.shieldReadyAt ? 1 : 1 - (PLAYER.shieldReadyAt-now)/(PLAYER.shieldDurMs+PLAYER.shieldCdMs);
+  drawCdBar(12, y, 'SHIELD (E)', Math.max(0,Math.min(1,sFrac)), '#7dd3fc'); y+=18;
+  // TANK
+  let tFrac = now >= PLAYER.tankReadyAt ? 1 : 1 - (PLAYER.tankReadyAt-now)/(PLAYER.tankDurMs+PLAYER.tankCdMs);
+  drawCdBar(12, y, 'TANK (Q)', Math.max(0,Math.min(1,tFrac)), '#a78bfa');
+}
+function drawCdBar(x,y,label,frac,col){
+  ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y,120,12);
+  ctx.fillStyle = frac>=1 ? col : 'rgba(255,255,255,0.25)';
+  ctx.fillRect(x,y,120*frac,12);
+  ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1; ctx.strokeRect(x,y,120,12);
+  ctx.fillStyle='#fff'; ctx.font='9px Trebuchet MS'; ctx.textAlign='left';
+  ctx.fillText(label + (frac>=1?' ✓':''), x+4, y+9);
+}
+
+/* Level banner text */
+function drawBanner(now) {
+  if (now > bannerUntil) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1,(bannerUntil-now)/400);
+  ctx.fillStyle = bannerText.includes('BOSS') ? '#ef4444' : '#c4b5fd';
+  ctx.font = 'bold 34px Trebuchet MS'; ctx.textAlign='center';
+  ctx.shadowColor='#000'; ctx.shadowBlur=8;
+  ctx.fillText(bannerText, W/2, H/2 - 40);
+  ctx.shadowBlur=0; ctx.textAlign='left'; ctx.restore();
+}
+
+/* =====================================================================
+   MAIN RENDER
+===================================================================== */
+function draw(now) {
+  drawBackground(now);
+  drawPlatforms();
+  drawStars();
+  for (const f of furbies) drawFurby(f, now);
+  for (const s of furbyShots) drawFurbyShot(s);
+  for (const s of petShots) drawPetShot(s);
+  drawPet();
+  drawPlayer(now);
+  for (const b of playerBalls) drawBall(b);
+  drawParticles();
+  if (state === 'playing') { drawAbilityBars(now); drawBanner(now); }
+}
+
+/* =====================================================================
+   CUTSCENE (intro story)
+===================================================================== */
+const CUTSCENE = [
+  { title:'PLANET LUMARA', text:'Far across the galaxy, the cute little Furbies suddenly turned... EVIL.' },
+  { title:'THE UPRISING', text:'They rose up, took over the cities, and captured ZYX\'s family.' },
+  { title:'THE SECRET AGENT', text:'ZYX is a shapeshifting secret agent. He was sent on a mission: stop the Furby uprising on his home planet and rescue his family.' },
+  { title:'THE MISSION BEGINS', text:'Armed with electric bowling balls, a force-field shield, a mighty TANK form, and his pet Glorp... ZYX strikes back. NOW.' },
+];
+let cutsceneIndex = 0;
+let typeChars = 0;
+
+function advanceCutscene() {
+  // if text still typing, finish it instantly; else go next panel
+  const panel = CUTSCENE[cutsceneIndex];
+  if (typeChars < panel.text.length) { typeChars = panel.text.length; return; }
+  cutsceneIndex++; typeChars = 0;
+  if (cutsceneIndex >= CUTSCENE.length) startStory();
+}
+function startStory() {
+  state = 'playing';
+  buildLevel(1);
+  updateHUD();
+}
+
+function drawCutscene(now) {
+  drawBackground(now);
+  const panel = CUTSCENE[cutsceneIndex];
+  // typewriter effect
+  if (typeChars < panel.text.length) typeChars += 0.6;
+  const shown = panel.text.slice(0, Math.floor(typeChars));
+
+  // simple illustration per panel
+  drawCutsceneArt(cutsceneIndex, now);
+
+  // title
+  ctx.fillStyle='#c4b5fd'; ctx.font='bold 26px Trebuchet MS'; ctx.textAlign='center';
+  ctx.shadowColor='#7c3aed'; ctx.shadowBlur=12;
+  ctx.fillText(panel.title, W/2, 90); ctx.shadowBlur=0;
+
+  // wrapped story text
+  ctx.fillStyle='#ddd6fe'; ctx.font='18px Trebuchet MS';
+  wrapText(shown, W/2, 380, 620, 26);
+
+  // prompt
+  ctx.fillStyle = Math.sin(now/300)>0 ? '#facc15' : '#854d0e';
+  ctx.font='14px Trebuchet MS';
+  ctx.fillText('Press SPACE to continue  ('+(cutsceneIndex+1)+'/'+CUTSCENE.length+')', W/2, 470);
+  ctx.textAlign='left';
+}
+
+function drawCutsceneArt(i, now) {
+  ctx.save();
+  if (i === 0) {
+    // planet
+    const g = ctx.createRadialGradient(W/2-30,200,20,W/2,220,120);
+    g.addColorStop(0,'#a78bfa'); g.addColorStop(1,'#4c1d95');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(W/2,220,110,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(167,139,250,0.5)'; ctx.lineWidth=6;
+    ctx.beginPath(); ctx.ellipse(W/2,220,170,40,0.3,0,Math.PI*2); ctx.stroke();
+  } else if (i === 1) {
+    // angry furby trio
+    for (let k=-1;k<=1;k++) drawMiniFurbyArt(W/2 + k*120, 220, 1+0.1*k, now);
+  } else if (i === 2) {
+    // ZYX standing heroic
+    drawHeroArt(W/2, 240, now);
+  } else {
+    // ZYX + pet + ball
+    drawHeroArt(W/2-40, 240, now);
+    // pet
+    ctx.fillStyle='#14b8a6'; ctx.beginPath(); ctx.arc(W/2+60,200,18,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(W/2+60,200,7,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#0f766e'; ctx.beginPath(); ctx.arc(W/2+62,201,3.5,0,Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawMiniFurbyArt(x,y,s,now){
+  ctx.save(); ctx.translate(x,y); ctx.scale(s,s);
+  ctx.fillStyle='#8B5A2B'; ctx.beginPath(); ctx.ellipse(0,0,40,46,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#E6B36A'; ctx.beginPath(); ctx.ellipse(0,8,20,24,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ff3b3b'; ctx.shadowColor='#ff3b3b'; ctx.shadowBlur=14;
+  ctx.beginPath(); ctx.arc(-13,-8,8,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(13,-8,8,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0; ctx.fillStyle='#1a0000';
+  ctx.beginPath(); ctx.arc(-13,-8,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(13,-8,3,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fbbf24'; ctx.beginPath(); ctx.moveTo(0,2); ctx.lineTo(-7,12); ctx.lineTo(7,12); ctx.fill();
+  ctx.restore();
+}
+function drawHeroArt(x,y,now){
+  ctx.save(); ctx.translate(x,y);
+  const ag = ctx.createRadialGradient(0,0,6,0,0,70);
+  ag.addColorStop(0,'rgba(167,139,250,0.4)'); ag.addColorStop(1,'rgba(167,139,250,0)');
+  ctx.fillStyle=ag; ctx.beginPath(); ctx.arc(0,0,70,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#c4b5fd'; ctx.beginPath(); ctx.ellipse(0,20,26,34,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ddd6fe'; ctx.beginPath(); ctx.arc(0,-24,24,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#0f0a2e';
+  ctx.beginPath(); ctx.ellipse(-9,-24,8,10,-0.2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(9,-24,8,10,0.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#a78bfa';
+  ctx.beginPath(); ctx.arc(-7,-27,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(11,-27,3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function wrapText(text,cx,y,maxW,lh){
+  const words=text.split(' '); let line=''; const lines=[];
+  for (const w of words){ const t=line+w+' ';
+    if (ctx.measureText(t).width > maxW && line){ lines.push(line); line=w+' '; } else line=t; }
+  lines.push(line);
+  const startY = y - (lines.length-1)*lh/2;
+  lines.forEach((l,i)=> ctx.fillText(l.trim(), cx, startY + i*lh));
+}
+
+/* =====================================================================
+   GAME LOOP
+===================================================================== */
+function loop(now) {
+  const dt = now - lastTime; lastTime = now;
+  if (state === 'cutscene') drawCutscene(now);
+  else { update(dt); draw(now); }
+  requestAnimationFrame(loop);
+}
+
+// Show first cutscene frame and start the loop
+updateHUD();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
